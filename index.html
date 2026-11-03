@@ -1,0 +1,1072 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ระบบบันทึกรายรับ-รายจ่าย | FinanceFlow (Firebase Sync)</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- React & ReactDOM -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <!-- Babel Standalone for JSX -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <!-- Firebase Compat SDKs (8/9 Compat for clean browser CDN usage) -->
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
+
+  <!-- External Firebase Config File -->
+  <script src="firebase-config.js"></script>
+
+  <!-- Google Fonts Prompt & Plus Jakarta Sans -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Prompt:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Prompt', 'Plus Jakarta Sans', 'sans-serif'],
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body {
+      font-family: 'Prompt', 'Plus Jakarta Sans', sans-serif;
+    }
+    .custom-scrollbar::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-track {
+      background: rgba(0, 0, 0, 0.03);
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+      background: rgba(156, 163, 175, 0.4);
+      border-radius: 9999px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+      background: rgba(156, 163, 175, 0.7);
+    }
+    .glass-effect {
+      background: rgba(255, 255, 255, 0.88);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+    }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-800 antialiased min-h-screen">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useMemo, useEffect } = React;
+
+    // Initialize Firebase
+    let firebaseInitialized = false;
+    let auth = null;
+    let db = null;
+
+    try {
+      if (typeof firebaseConfig !== 'undefined' && firebaseConfig.apiKey && firebaseConfig.apiKey !== 'YOUR_API_KEY') {
+        firebase.initializeApp(firebaseConfig);
+        auth = firebase.auth();
+        db = firebase.firestore();
+        firebaseInitialized = true;
+      }
+    } catch (err) {
+      console.warn('Firebase init error:', err);
+    }
+
+    const CATEGORIES = {
+      income: [
+        { id: 'salary', label: 'เงินเดือน', icon: 'wallet' },
+        { id: 'freelance', label: 'ฟรีแลนซ์/งานเสริม', icon: 'laptop' },
+        { id: 'investment', label: 'เงินปันผล/ลงทุน', icon: 'trending-up' },
+        { id: 'other_income', label: 'อื่นๆ', icon: 'coins' },
+      ],
+      expense: [
+        { id: 'food', label: 'อาหารและเครื่องดื่ม', icon: 'utensils' },
+        { id: 'housing', label: 'ที่พักอาศัย/ค่าเช่า', icon: 'home' },
+        { id: 'transport', label: 'การเดินทาง/น้ำมัน', icon: 'car' },
+        { id: 'shopping', label: 'ช้อปปิ้ง/ของใช้', icon: 'shopping-bag' },
+        { id: 'entertainment', label: 'ความบันเทิง', icon: 'film' },
+        { id: 'bills', label: 'บิล/สาธารณูปโภค', icon: 'receipt' },
+        { id: 'other_expense', label: 'อื่นๆ', icon: 'tag' },
+      ]
+    };
+
+    const MONTH_NAMES = [
+      'มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน',
+      'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'
+    ];
+
+    const DAY_NAMES = ['อา.', 'จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.'];
+
+    function App() {
+      // User auth state
+      const [user, setUser] = useState(null);
+      const [authLoading, setAuthLoading] = useState(firebaseInitialized);
+      const [syncStatus, setSyncStatus] = useState(firebaseInitialized ? 'syncing' : 'offline');
+
+      // Transactions
+      const [transactions, setTransactions] = useState([]);
+      const [isModalOpen, setIsModalOpen] = useState(false);
+      const [filterType, setFilterType] = useState('all');
+      const [searchQuery, setSearchQuery] = useState('');
+      const [selectedDate, setSelectedDate] = useState(null);
+
+      // Active Year & Month
+      const [currentYear, setCurrentYear] = useState(new Date().getFullYear());
+      const [currentMonth, setCurrentMonth] = useState(new Date().getMonth());
+
+      // Form state
+      const [formData, setFormData] = useState({
+        type: 'expense',
+        title: '',
+        amount: '',
+        category: 'food',
+        date: new Date().toISOString().split('T')[0],
+        note: ''
+      });
+
+      // Listen to Auth State
+      useEffect(() => {
+        if (!firebaseInitialized) {
+          // Fallback to localStorage if Firebase not yet configured
+          const local = localStorage.getItem('money_transactions');
+          if (local) setTransactions(JSON.parse(local));
+          setAuthLoading(false);
+          return;
+        }
+
+        const unsubscribeAuth = auth.onAuthStateChanged((currUser) => {
+          setUser(currUser);
+          setAuthLoading(false);
+        });
+        return () => unsubscribeAuth();
+      }, []);
+
+      // Realtime Firestore Listener when User is Logged In
+      useEffect(() => {
+        if (!user || !db) return;
+
+        setSyncStatus('syncing');
+        const userRef = db.collection('users').doc(user.uid).collection('transactions');
+        
+        const unsubscribe = userRef.onSnapshot(
+          (snapshot) => {
+            const list = [];
+            snapshot.forEach(doc => {
+              list.push({ id: doc.id, ...doc.data() });
+            });
+            setTransactions(list);
+            setSyncStatus('synced');
+          },
+          (error) => {
+            console.error('Firestore Error:', error);
+            setSyncStatus('error');
+          }
+        );
+
+        return () => unsubscribe();
+      }, [user]);
+
+      // Re-render Lucide icons
+      useEffect(() => {
+        setTimeout(() => {
+          if (window.lucide) window.lucide.createIcons();
+        }, 50);
+      }, [transactions, isModalOpen, filterType, currentMonth, currentYear, selectedDate, user]);
+
+      // Handle Google Sign-In
+      const handleGoogleLogin = async () => {
+        if (!firebaseInitialized) {
+          alert('กรุณาใส่ Firebase Config ในไฟล์ firebase-config.js ก่อนครับ');
+          return;
+        }
+        try {
+          const provider = new firebase.auth.GoogleAuthProvider();
+          await auth.signInWithPopup(provider);
+        } catch (error) {
+          console.error(error);
+          alert('เข้าสู่ระบบไม่สำเร็จ: ' + error.message);
+        }
+      };
+
+      const handleLogout = async () => {
+        if (confirm('ต้องการออกจากระบบใช่หรือไม่?')) {
+          await auth.signOut();
+          setTransactions([]);
+        }
+      };
+
+      // Month Key: '2026-11'
+      const currentMonthKey = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}`;
+
+      // Monthly Summary
+      const monthlySummary = useMemo(() => {
+        let income = 0;
+        let expense = 0;
+        let count = 0;
+
+        transactions.forEach(t => {
+          if (t.date && t.date.startsWith(currentMonthKey)) {
+            count++;
+            if (t.type === 'income') income += Number(t.amount);
+            if (t.type === 'expense') expense += Number(t.amount);
+          }
+        });
+
+        const balance = income - expense;
+        const savingRate = income > 0 ? Math.round(((income - expense) / income) * 100) : 0;
+        const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
+        const avgExpensePerDay = daysInMonth > 0 ? Math.round(expense / daysInMonth) : 0;
+
+        return { income, expense, balance, savingRate, count, daysInMonth, avgExpensePerDay };
+      }, [transactions, currentMonthKey, currentYear, currentMonth]);
+
+      // All Totals
+      const allTotals = useMemo(() => {
+        let income = 0;
+        let expense = 0;
+        transactions.forEach(t => {
+          if (t.type === 'income') income += Number(t.amount);
+          if (t.type === 'expense') expense += Number(t.amount);
+        });
+        return { income, expense, balance: income - expense };
+      }, [transactions]);
+
+      // Daily transactions map
+      const dailyTransactionsMap = useMemo(() => {
+        const map = {};
+        transactions.forEach(t => {
+          if (!map[t.date]) {
+            map[t.date] = { income: 0, expense: 0, items: [] };
+          }
+          if (t.type === 'income') map[t.date].income += Number(t.amount);
+          if (t.type === 'expense') map[t.date].expense += Number(t.amount);
+          map[t.date].items.push(t);
+        });
+        return map;
+      }, [transactions]);
+
+      // Calendar Days calculation
+      const calendarDays = useMemo(() => {
+        const firstDayOfMonth = new Date(currentYear, currentMonth, 1).getDay();
+        const daysInCurrentMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
+        const daysInPrevMonth = new Date(currentYear, currentMonth, 0).getDate();
+
+        const cells = [];
+        for (let i = firstDayOfMonth - 1; i >= 0; i--) {
+          cells.push({ day: daysInPrevMonth - i, isCurrentMonth: false, dateString: null });
+        }
+        for (let day = 1; day <= daysInCurrentMonth; day++) {
+          const mStr = String(currentMonth + 1).padStart(2, '0');
+          const dStr = String(day).padStart(2, '0');
+          const dateString = `${currentYear}-${mStr}-${dStr}`;
+          const dayData = dailyTransactionsMap[dateString] || { income: 0, expense: 0, items: [] };
+          cells.push({
+            day,
+            isCurrentMonth: true,
+            dateString,
+            income: dayData.income,
+            expense: dayData.expense,
+            count: dayData.items.length
+          });
+        }
+        const remaining = cells.length <= 35 ? 35 - cells.length : 42 - cells.length;
+        for (let day = 1; day <= remaining; day++) {
+          cells.push({ day, isCurrentMonth: false, dateString: null });
+        }
+        return { cells, daysInMonth: daysInCurrentMonth };
+      }, [currentYear, currentMonth, dailyTransactionsMap]);
+
+      // 5 Months Trends
+      const monthlyTrends = useMemo(() => {
+        const list = [];
+        for (let i = 4; i >= 0; i--) {
+          const target = new Date(currentYear, currentMonth - i, 1);
+          const y = target.getFullYear();
+          const m = target.getMonth();
+          const key = `${y}-${String(m + 1).padStart(2, '0')}`;
+          let inc = 0, exp = 0;
+          transactions.forEach(t => {
+            if (t.date && t.date.startsWith(key)) {
+              if (t.type === 'income') inc += Number(t.amount);
+              if (t.type === 'expense') exp += Number(t.amount);
+            }
+          });
+          list.push({
+            key, year: y, month: m,
+            label: `${MONTH_NAMES[m].slice(0, 3)}.`,
+            income: inc, expense: exp, balance: inc - exp,
+            isCurrent: key === currentMonthKey
+          });
+        }
+        return list;
+      }, [transactions, currentYear, currentMonth, currentMonthKey]);
+
+      const maxTrendAmount = useMemo(() => {
+        let max = 1000;
+        monthlyTrends.forEach(t => {
+          if (t.income > max) max = t.income;
+          if (t.expense > max) max = t.expense;
+        });
+        return max;
+      }, [monthlyTrends]);
+
+      // Month navigators
+      const handlePrevMonth = () => {
+        setSelectedDate(null);
+        if (currentMonth === 0) {
+          setCurrentMonth(11);
+          setCurrentYear(prev => prev - 1);
+        } else setCurrentMonth(prev => prev - 1);
+      };
+
+      const handleNextMonth = () => {
+        setSelectedDate(null);
+        if (currentMonth === 11) {
+          setCurrentMonth(0);
+          setCurrentYear(prev => prev + 1);
+        } else setCurrentMonth(prev => prev + 1);
+      };
+
+      // Filtered transactions
+      const filteredTransactions = useMemo(() => {
+        return transactions.filter(item => {
+          const matchType = filterType === 'all' || item.type === filterType;
+          const matchDate = selectedDate ? item.date === selectedDate : (item.date && item.date.startsWith(currentMonthKey));
+          const matchSearch = item.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                              (item.note && item.note.toLowerCase().includes(searchQuery.toLowerCase()));
+          return matchType && matchDate && matchSearch;
+        }).sort((a, b) => new Date(b.date) - new Date(a.date));
+      }, [transactions, filterType, selectedDate, searchQuery, currentMonthKey]);
+
+      // Category breakdown
+      const currentMonthCategorySummary = useMemo(() => {
+        const map = {};
+        transactions
+          .filter(t => t.type === 'expense' && t.date && t.date.startsWith(currentMonthKey))
+          .forEach(t => {
+            map[t.category] = (map[t.category] || 0) + Number(t.amount);
+          });
+        return Object.keys(map).map(catId => {
+          const catInfo = CATEGORIES.expense.find(c => c.id === catId) || { label: catId };
+          return {
+            id: catId,
+            label: catInfo.label,
+            amount: map[catId],
+            percentage: monthlySummary.expense > 0 ? Math.round((map[catId] / monthlySummary.expense) * 100) : 0
+          };
+        }).sort((a, b) => b.amount - a.amount);
+      }, [transactions, currentMonthKey, monthlySummary.expense]);
+
+      const handleOpenModal = (defaultType = 'expense', targetDate = null) => {
+        if (!user && firebaseInitialized) {
+          alert('กรุณาเข้าสู่ระบบด้วย Google ก่อนเพื่อซิงค์ข้อมูลลง Cloud ครับ');
+          return;
+        }
+        setFormData({
+          type: defaultType,
+          title: '',
+          amount: '',
+          category: defaultType === 'income' ? 'salary' : 'food',
+          date: targetDate || selectedDate || `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}-01`,
+          note: ''
+        });
+        setIsModalOpen(true);
+      };
+
+      const handleSubmit = async (e) => {
+        e.preventDefault();
+        if (!formData.title || !formData.amount || Number(formData.amount) <= 0) {
+          alert('กรุณากรอกข้อมูลชื่อรายการและจำนวนเงินให้ถูกต้อง');
+          return;
+        }
+
+        const newTx = {
+          title: formData.title,
+          amount: parseFloat(formData.amount),
+          type: formData.type,
+          category: formData.category,
+          date: formData.date,
+          note: formData.note || '',
+          createdAt: new Date().toISOString()
+        };
+
+        if (user && db) {
+          // Save directly to Firebase Cloud
+          await db.collection('users').doc(user.uid).collection('transactions').add(newTx);
+        } else {
+          // Offline fallback
+          const updated = [{ id: Date.now().toString(), ...newTx }, ...transactions];
+          setTransactions(updated);
+          localStorage.setItem('money_transactions', JSON.stringify(updated));
+        }
+
+        setIsModalOpen(false);
+      };
+
+      const handleDelete = async (id) => {
+        if (confirm('คุณต้องการลบรายการนี้ใช่หรือไม่?')) {
+          if (user && db) {
+            await db.collection('users').doc(user.uid).collection('transactions').doc(id).delete();
+          } else {
+            const updated = transactions.filter(t => t.id !== id);
+            setTransactions(updated);
+            localStorage.setItem('money_transactions', JSON.stringify(updated));
+          }
+        }
+      };
+
+      const formatBaht = (num) => {
+        return new Intl.NumberFormat('th-TH', { style: 'currency', currency: 'THB', minimumFractionDigits: 0 }).format(num);
+      };
+
+      return (
+        <div className="min-h-screen pb-16 bg-slate-50/70">
+          {/* Header Bar */}
+          <header className="glass-effect sticky top-0 z-30 border-b border-slate-200/80 px-4 sm:px-8 py-3.5 shadow-sm">
+            <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+              <div className="flex items-center space-x-3">
+                <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-violet-500 flex items-center justify-center text-white shadow-lg shadow-indigo-500/25">
+                  <i data-lucide="cloud" className="w-5 h-5"></i>
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h1 className="text-xl font-bold bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-800 bg-clip-text text-transparent">
+                      FinanceFlow
+                    </h1>
+                    {/* Sync Indicator */}
+                    {user ? (
+                      <span className="inline-flex items-center gap-1 text-[10px] bg-emerald-50 text-emerald-600 px-2 py-0.5 rounded-full font-medium border border-emerald-200/60">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> ซิงค์ Cloud
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-[10px] bg-amber-50 text-amber-700 px-2 py-0.5 rounded-full font-medium border border-amber-200/60">
+                        เครื่องนี้ (ยังไม่ซิงค์)
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-500">บันทึกรายรับ-รายจ่าย เชื่อมต่อมือถือ & คอม</p>
+                </div>
+              </div>
+
+              {/* Month Selector & User Status */}
+              <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
+                {/* Month Navigator */}
+                <div className="flex items-center bg-slate-100/90 border border-slate-200/80 p-1 rounded-2xl shadow-inner">
+                  <button onClick={handlePrevMonth} className="p-1.5 rounded-xl hover:bg-white text-slate-600 transition">
+                    <i data-lucide="chevron-left" className="w-4 h-4"></i>
+                  </button>
+                  <span className="px-2 text-xs font-bold text-slate-800 min-w-[110px] text-center">
+                    {MONTH_NAMES[currentMonth]} {currentYear + 543}
+                  </span>
+                  <button onClick={handleNextMonth} className="p-1.5 rounded-xl hover:bg-white text-slate-600 transition">
+                    <i data-lucide="chevron-right" className="w-4 h-4"></i>
+                  </button>
+                </div>
+
+                {/* Google Sign In / User Profile */}
+                {user ? (
+                  <div className="flex items-center gap-2 bg-white px-2.5 py-1.5 rounded-2xl border border-slate-200 shadow-sm">
+                    {user.photoURL ? (
+                      <img src={user.photoURL} alt="" className="w-6 h-6 rounded-full" />
+                    ) : (
+                      <div className="w-6 h-6 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[10px]">
+                        {user.displayName ? user.displayName[0] : 'U'}
+                      </div>
+                    )}
+                    <span className="text-xs font-medium text-slate-700 max-w-[90px] truncate">{user.displayName || user.email}</span>
+                    <button onClick={handleLogout} title="ออกจากระบบ" className="text-slate-400 hover:text-rose-600 ml-1">
+                      <i data-lucide="log-out" className="w-3.5 h-3.5"></i>
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={handleGoogleLogin}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 transition shadow-sm"
+                  >
+                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24">
+                      <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                      <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+                      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+                    </svg>
+                    <span>ล็อกอิน Google</span>
+                  </button>
+                )}
+
+                {/* Add Transaction Button */}
+                <button
+                  onClick={() => handleOpenModal('expense')}
+                  className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-medium bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white shadow-md shadow-indigo-500/25 transition transform active:scale-95"
+                >
+                  <i data-lucide="plus" className="w-4 h-4"></i>
+                  <span className="font-semibold">บันทึกรายการ</span>
+                </button>
+              </div>
+            </div>
+          </header>
+
+          <main className="max-w-7xl mx-auto px-4 sm:px-8 mt-6 space-y-6">
+
+            {/* Guide alert if Firebase Config is not filled */}
+            {!firebaseInitialized && (
+              <div className="bg-amber-50 border border-amber-200/80 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-amber-900 text-xs">
+                <div className="flex items-center gap-2.5">
+                  <i data-lucide="info" className="w-5 h-5 text-amber-600 shrink-0"></i>
+                  <span>
+                    <strong>โหมดใช้งานออฟไลน์:</strong> ปัจจุบันข้อมูลยังบันทึกในเครื่องนี้ เพื่อให้ซิงค์ข้อมูลกับมือถือได้ กรุณานำค่า Config จาก Firebase มาใส่ในไฟล์ <code className="bg-amber-100/80 px-1 py-0.5 rounded font-mono">firebase-config.js</code> ครับ
+                  </span>
+                </div>
+              </div>
+            )}
+            
+            {/* Monthly Highlight Banner */}
+            <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-sm relative overflow-hidden">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+                <div>
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-50 border border-indigo-100 text-indigo-700 text-xs font-semibold mb-2">
+                    <i data-lucide="calendar-check" className="w-3.5 h-3.5"></i>
+                    <span>สรุปการเงินประจำเดือน {MONTH_NAMES[currentMonth]} {currentYear + 543}</span>
+                  </div>
+                  <h2 className="text-2xl font-extrabold text-slate-900 tracking-tight">
+                    {monthlySummary.balance >= 0 ? 'เดือนนี้คุณมีเงินออมสุทธิ' : 'เดือนนี้ใช้จ่ายเกินตัว'}
+                    <span className={`ml-2 text-2xl font-black ${monthlySummary.balance >= 0 ? 'text-indigo-600' : 'text-rose-600'}`}>
+                      {formatBaht(monthlySummary.balance)}
+                    </span>
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-1">
+                    มีธุรกรรมทั้งหมด {monthlySummary.count} รายการในเดือนนี้ • เฉลี่ยรายจ่ายวันละ <span className="font-semibold text-slate-700">{formatBaht(monthlySummary.avgExpensePerDay)}</span>
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                  <div className="bg-slate-50/80 border border-slate-100 p-3 rounded-2xl text-center">
+                    <span className="text-[11px] font-medium text-slate-500 block">รายรับเดือนนี้</span>
+                    <span className="text-sm sm:text-base font-bold text-emerald-600">+{formatBaht(monthlySummary.income)}</span>
+                  </div>
+                  <div className="bg-slate-50/80 border border-slate-100 p-3 rounded-2xl text-center">
+                    <span className="text-[11px] font-medium text-slate-500 block">รายจ่ายเดือนนี้</span>
+                    <span className="text-sm sm:text-base font-bold text-rose-600">-{formatBaht(monthlySummary.expense)}</span>
+                  </div>
+                  <div className="col-span-2 sm:col-span-1 bg-slate-50/80 border border-slate-100 p-3 rounded-2xl text-center">
+                    <span className="text-[11px] font-medium text-slate-500 block">อัตราการออม</span>
+                    <span className={`text-sm sm:text-base font-bold ${monthlySummary.savingRate >= 20 ? 'text-indigo-600' : 'text-amber-600'}`}>
+                      {monthlySummary.savingRate}%
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Top 3 Stat Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+              <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 p-6 text-white shadow-xl shadow-indigo-950/20 border border-slate-800">
+                <div className="flex items-center justify-between mb-4">
+                  <span className="text-xs uppercase tracking-wider font-medium text-slate-300">คงเหลือสุทธิ (เดือนนี้)</span>
+                  <div className="w-8 h-8 rounded-xl bg-white/10 flex items-center justify-center text-white backdrop-blur-md">
+                    <i data-lucide="landmark" className="w-4 h-4"></i>
+                  </div>
+                </div>
+                <div className="text-3xl font-extrabold tracking-tight">
+                  {formatBaht(monthlySummary.balance)}
+                </div>
+                <div className="mt-4 pt-3 border-t border-white/10 flex items-center justify-between text-xs text-slate-300">
+                  <span>ยอดสะสมตลอดชีพ</span>
+                  <span className="font-semibold text-white">{formatBaht(allTotals.balance)}</span>
+                </div>
+              </div>
+
+              <div className="rounded-3xl bg-white p-6 shadow-sm border border-slate-200/80 hover:shadow-md transition">
+                <div className="flex items-center justify-between mb-4">
+                  <span className="text-xs uppercase tracking-wider font-semibold text-slate-500">รายรับรวม (เดือนนี้)</span>
+                  <div className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                    <i data-lucide="arrow-down-left" className="w-4 h-4"></i>
+                  </div>
+                </div>
+                <div className="text-3xl font-extrabold text-emerald-600 tracking-tight">
+                  +{formatBaht(monthlySummary.income)}
+                </div>
+                <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+                  <span>สถานะซิงค์</span>
+                  <span className="text-emerald-600 font-semibold">{user ? 'ออนไลน์ผ่าน Cloud' : 'ในเครื่องนี้'}</span>
+                </div>
+              </div>
+
+              <div className="rounded-3xl bg-white p-6 shadow-sm border border-slate-200/80 hover:shadow-md transition">
+                <div className="flex items-center justify-between mb-4">
+                  <span className="text-xs uppercase tracking-wider font-semibold text-slate-500">รายจ่ายรวม (เดือนนี้)</span>
+                  <div className="w-8 h-8 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center">
+                    <i data-lucide="arrow-up-right" className="w-4 h-4"></i>
+                  </div>
+                </div>
+                <div className="text-3xl font-extrabold text-rose-600 tracking-tight">
+                  -{formatBaht(monthlySummary.expense)}
+                </div>
+                <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+                  <span>เฉลี่ยต่อวัน</span>
+                  <span className="text-rose-600 font-semibold">~{formatBaht(monthlySummary.avgExpensePerDay)} / วัน</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Monthly Trend Bar Chart */}
+            <div className="bg-white rounded-3xl p-5 sm:p-6 border border-slate-200/80 shadow-sm">
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h3 className="text-base font-bold text-slate-800">เปรียบเทียบแนวโน้ม 5 เดือนย้อนหลัง</h3>
+                  <p className="text-xs text-slate-500">คลิกที่แท่งแต่ละเดือนเพื่อเปลี่ยนไปดูข้อมูลเดือนนั้นได้ทันที</p>
+                </div>
+                <div className="flex items-center gap-4 text-xs font-semibold">
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-3 h-3 rounded-full bg-emerald-500"></span>
+                    <span className="text-slate-600">รายรับ</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-3 h-3 rounded-full bg-rose-500"></span>
+                    <span className="text-slate-600">รายจ่าย</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-5 gap-2 sm:gap-4 items-end pt-6 pb-2 min-h-[170px] border-b border-slate-100">
+                {monthlyTrends.map((m) => {
+                  const incHeight = maxTrendAmount > 0 ? Math.round((m.income / maxTrendAmount) * 110) : 0;
+                  const expHeight = maxTrendAmount > 0 ? Math.round((m.expense / maxTrendAmount) * 110) : 0;
+
+                  return (
+                    <div 
+                      key={m.key} 
+                      onClick={() => {
+                        setCurrentYear(m.year);
+                        setCurrentMonth(m.month);
+                        setSelectedDate(null);
+                      }}
+                      className={`flex flex-col items-center cursor-pointer group transition p-2 rounded-2xl ${m.isCurrent ? 'bg-indigo-50/70 border border-indigo-200/80 shadow-sm' : 'hover:bg-slate-50'}`}
+                    >
+                      <div className="flex items-end gap-1.5 h-[120px] mb-2">
+                        <div 
+                          className="w-3 sm:w-5 bg-emerald-400 group-hover:bg-emerald-500 rounded-t-lg transition-all duration-500"
+                          style={{ height: `${Math.max(incHeight, 4)}px` }}
+                        ></div>
+                        <div 
+                          className="w-3 sm:w-5 bg-rose-400 group-hover:bg-rose-500 rounded-t-lg transition-all duration-500"
+                          style={{ height: `${Math.max(expHeight, 4)}px` }}
+                        ></div>
+                      </div>
+                      <span className={`text-xs font-bold ${m.isCurrent ? 'text-indigo-600' : 'text-slate-600'}`}>
+                        {m.label}
+                      </span>
+                      <span className="text-[10px] text-slate-400 font-medium">
+                        {m.balance >= 0 ? '+' : ''}{formatBaht(m.balance)}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Interactive Month Calendar Section */}
+            <div className="bg-white rounded-3xl p-5 sm:p-6 border border-slate-200/80 shadow-sm">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <i data-lucide="calendar" className="w-5 h-5 text-indigo-600"></i>
+                    <h2 className="text-lg font-bold text-slate-800">
+                      ปฏิทินรายรับ-รายจ่าย ประจำเดือน {MONTH_NAMES[currentMonth]} {currentYear + 543}
+                    </h2>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    เดือนนี้มีทั้งหมด <span className="font-semibold text-indigo-600">{calendarDays.daysInMonth} วัน</span> (คลิกเพื่อกรองเฉพาะวัน หรือดับเบิลคลิกเพื่อเพิ่มรายการ)
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {selectedDate && (
+                    <button
+                      onClick={() => setSelectedDate(null)}
+                      className="px-3 py-1.5 text-xs font-medium rounded-xl bg-indigo-50 text-indigo-600 hover:bg-indigo-100 transition flex items-center gap-1"
+                    >
+                      <i data-lucide="filter-x" className="w-3.5 h-3.5"></i>
+                      <span>ดูทุกวันในเดือนนี้ ({selectedDate})</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Calendar Grid */}
+              <div className="overflow-x-auto">
+                <div className="min-w-[620px]">
+                  <div className="grid grid-cols-7 gap-2 mb-2">
+                    {DAY_NAMES.map((name, idx) => (
+                      <div
+                        key={name}
+                        className={`text-center py-2 text-xs font-bold uppercase tracking-wider rounded-xl ${
+                          idx === 0 ? 'text-rose-500 bg-rose-50/50' : idx === 6 ? 'text-indigo-600 bg-indigo-50/50' : 'text-slate-600 bg-slate-50'
+                        }`}
+                      >
+                        {name}
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="grid grid-cols-7 gap-2">
+                    {calendarDays.cells.map((cell, idx) => {
+                      if (!cell.isCurrentMonth) {
+                        return (
+                          <div key={`empty-${idx}`} className="min-h-[85px] p-2 rounded-2xl bg-slate-50/40 text-slate-300">
+                            <span className="text-xs font-medium">{cell.day}</span>
+                          </div>
+                        );
+                      }
+
+                      const isSelected = selectedDate === cell.dateString;
+                      const hasData = cell.count > 0;
+
+                      return (
+                        <div
+                          key={cell.dateString}
+                          onClick={() => setSelectedDate(isSelected ? null : cell.dateString)}
+                          onDoubleClick={() => handleOpenModal('expense', cell.dateString)}
+                          className={`min-h-[88px] p-2 rounded-2xl border transition-all cursor-pointer flex flex-col justify-between group ${
+                            isSelected
+                              ? 'border-indigo-600 bg-indigo-50/60 shadow-md ring-2 ring-indigo-500/20'
+                              : 'border-slate-100 hover:border-indigo-200 hover:bg-slate-50/80 bg-white'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className={`text-xs font-bold rounded-lg px-1.5 py-0.5 ${
+                              isSelected ? 'bg-indigo-600 text-white' : 'text-slate-700 group-hover:text-indigo-600'
+                            }`}>
+                              {cell.day}
+                            </span>
+                            {hasData && (
+                              <span className="text-[10px] px-1.5 py-0.2 rounded-full font-medium bg-slate-100 text-slate-600">
+                                {cell.count} รายการ
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="space-y-1 mt-1">
+                            {cell.income > 0 && (
+                              <div className="text-[11px] font-semibold text-emerald-600 bg-emerald-50/80 px-1.5 py-0.5 rounded-lg truncate">
+                                +{formatBaht(cell.income)}
+                              </div>
+                            )}
+                            {cell.expense > 0 && (
+                              <div className="text-[11px] font-semibold text-rose-600 bg-rose-50/80 px-1.5 py-0.5 rounded-lg truncate">
+                                -{formatBaht(cell.expense)}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* List + Category Breakdown Side */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              
+              {/* Transactions List */}
+              <div className="lg:col-span-2 space-y-4">
+                <div className="bg-white rounded-3xl p-5 sm:p-6 border border-slate-200/80 shadow-sm">
+                  
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h2 className="text-lg font-bold text-slate-800">รายการเคลื่อนไหวทางการเงิน</h2>
+                        {selectedDate ? (
+                          <span className="text-xs bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-lg font-semibold">
+                            วันที่ {selectedDate}
+                          </span>
+                        ) : (
+                          <span className="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-lg font-semibold">
+                            เดือน {MONTH_NAMES[currentMonth]}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-500">พบ {filteredTransactions.length} รายการ</p>
+                    </div>
+
+                    <div className="flex items-center bg-slate-100 p-1 rounded-2xl self-start sm:self-auto text-xs font-semibold">
+                      <button
+                        onClick={() => setFilterType('all')}
+                        className={`px-3 py-1.5 rounded-xl transition ${filterType === 'all' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
+                      >
+                        ทั้งหมด
+                      </button>
+                      <button
+                        onClick={() => setFilterType('income')}
+                        className={`px-3 py-1.5 rounded-xl transition ${filterType === 'income' ? 'bg-emerald-500 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
+                      >
+                        รายรับ
+                      </button>
+                      <button
+                        onClick={() => setFilterType('expense')}
+                        className={`px-3 py-1.5 rounded-xl transition ${filterType === 'expense' ? 'bg-rose-500 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
+                      >
+                        รายจ่าย
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="mb-4 relative">
+                    <i data-lucide="search" className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2"></i>
+                    <input
+                      type="text"
+                      placeholder="ค้นหาชื่อรายการ หรือบันทึกโน้ต..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full pl-10 pr-4 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition"
+                    />
+                    {searchQuery && (
+                      <button onClick={() => setSearchQuery('')} className="text-xs text-slate-400 absolute right-3 top-1/2 -translate-y-1/2">
+                        ล้าง
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="divide-y divide-slate-100 custom-scrollbar max-h-[500px] overflow-y-auto pr-1">
+                    {filteredTransactions.length === 0 ? (
+                      <div className="py-14 text-center">
+                        <div className="w-12 h-12 mx-auto rounded-full bg-slate-100 flex items-center justify-center text-slate-400 mb-3">
+                          <i data-lucide="inbox" className="w-6 h-6"></i>
+                        </div>
+                        <p className="text-sm font-medium text-slate-600">ไม่พบรายการ</p>
+                        <p className="text-xs text-slate-400 mt-1">กดปุ่ม "บันทึกรายการ" เพื่อเพิ่มใหม่</p>
+                      </div>
+                    ) : (
+                      filteredTransactions.map(item => {
+                        const isIncome = item.type === 'income';
+                        const catGroup = isIncome ? CATEGORIES.income : CATEGORIES.expense;
+                        const cat = catGroup.find(c => c.id === item.category) || { label: item.category };
+
+                        return (
+                          <div key={item.id} className="py-3.5 flex items-center justify-between group hover:bg-slate-50/80 px-2 rounded-2xl transition">
+                            <div className="flex items-center space-x-3.5">
+                              <div className={`w-11 h-11 rounded-2xl flex items-center justify-center text-lg ${isIncome ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'}`}>
+                                <i data-lucide={isIncome ? 'arrow-down-left' : 'arrow-up-right'} className="w-5 h-5"></i>
+                              </div>
+                              <div>
+                                <h4 className="text-sm font-semibold text-slate-800">{item.title}</h4>
+                                <div className="flex items-center gap-2 mt-0.5 text-xs text-slate-400">
+                                  <span className="font-medium text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">{cat.label}</span>
+                                  <span>•</span>
+                                  <span>{item.date}</span>
+                                  {item.note && (
+                                    <>
+                                      <span>•</span>
+                                      <span className="truncate max-w-[140px] italic">"{item.note}"</span>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center space-x-3">
+                              <span className={`text-base font-bold tabular-nums ${isIncome ? 'text-emerald-600' : 'text-slate-800'}`}>
+                                {isIncome ? '+' : '-'}{formatBaht(item.amount)}
+                              </span>
+                              <button
+                                onClick={() => handleDelete(item.id)}
+                                title="ลบรายการ"
+                                className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition"
+                              >
+                                <i data-lucide="trash-2" className="w-4 h-4"></i>
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+
+                </div>
+              </div>
+
+              {/* Right Column */}
+              <div className="space-y-6">
+                <div className="bg-white rounded-3xl p-5 sm:p-6 border border-slate-200/80 shadow-sm">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-base font-bold text-slate-800">สัดส่วนค่าใช้จ่ายเดือนนี้</h3>
+                    <span className="text-xs text-slate-400 font-medium">{MONTH_NAMES[currentMonth]}</span>
+                  </div>
+
+                  {currentMonthCategorySummary.length === 0 ? (
+                    <p className="text-xs text-slate-400 py-6 text-center">ไม่มีข้อมูลรายจ่ายในเดือนนี้</p>
+                  ) : (
+                    <div className="space-y-3.5">
+                      {currentMonthCategorySummary.map(cat => (
+                        <div key={cat.id} className="space-y-1.5">
+                          <div className="flex justify-between items-center text-xs">
+                            <span className="font-medium text-slate-700">{cat.label}</span>
+                            <div className="space-x-1.5 text-slate-500 font-medium">
+                              <span>{formatBaht(cat.amount)}</span>
+                              <span className="text-slate-400">({cat.percentage}%)</span>
+                            </div>
+                          </div>
+                          <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+                            <div className="bg-indigo-600 h-full rounded-full transition-all duration-500" style={{ width: `${cat.percentage}%` }}></div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-3xl bg-gradient-to-br from-indigo-50 to-violet-50 p-5 sm:p-6 border border-indigo-100 text-indigo-950">
+                  <div className="flex items-center gap-2 mb-2">
+                    <i data-lucide="sparkles" className="w-5 h-5 text-indigo-600"></i>
+                    <h4 className="font-bold text-sm">การเชื่อมต่อ Cloud & ข้อมูล</h4>
+                  </div>
+                  <p className="text-xs leading-relaxed text-indigo-900/80">
+                    {user 
+                      ? 'คุณเชื่อมต่อบัญชี Google สำเร็จแล้ว ข้อมูลจะถูกจัดเก็บลง Cloud และอัปเดตตรงกันทุกครั้งที่เปิดผ่านมือถือหรือคอมพิวเตอร์' 
+                      : 'เข้าสู่ระบบด้วย Google เพื่อให้ข้อมูลทุกอย่างซิงค์ข้ามอุปกรณ์ได้ทันทีแบบอัตโนมัติ'}
+                  </p>
+                </div>
+              </div>
+
+            </div>
+          </main>
+
+          {/* Add Transaction Modal */}
+          {isModalOpen && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm transition-opacity">
+              <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl border border-slate-100 overflow-hidden transform transition-all animate-in fade-in zoom-in-95 duration-200">
+                <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
+                      <i data-lucide="plus-circle" className="w-4 h-4"></i>
+                    </div>
+                    <h3 className="font-bold text-slate-800 text-base">บันทึกรายการใหม่</h3>
+                  </div>
+                  <button onClick={() => setIsModalOpen(false)} className="p-1 rounded-lg text-slate-400 hover:text-slate-600">
+                    <i data-lucide="x" className="w-5 h-5"></i>
+                  </button>
+                </div>
+
+                <form onSubmit={handleSubmit} className="p-6 space-y-4">
+                  <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 rounded-2xl">
+                    <button
+                      type="button"
+                      onClick={() => setFormData({ ...formData, type: 'income', category: 'salary' })}
+                      className={`py-2 text-sm font-semibold rounded-xl flex items-center justify-center gap-1.5 transition ${formData.type === 'income' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500'}`}
+                    >
+                      <i data-lucide="arrow-down-left" className="w-4 h-4"></i>
+                      <span>รายรับ (+)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFormData({ ...formData, type: 'expense', category: 'food' })}
+                      className={`py-2 text-sm font-semibold rounded-xl flex items-center justify-center gap-1.5 transition ${formData.type === 'expense' ? 'bg-white text-rose-600 shadow-sm' : 'text-slate-500'}`}
+                    >
+                      <i data-lucide="arrow-up-right" className="w-4 h-4"></i>
+                      <span>รายจ่าย (-)</span>
+                    </button>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">ชื่อรายการ *</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="เช่น ค่าอาหาร, เงินเดือน, ค่าเน็ต"
+                      value={formData.title}
+                      onChange={(e) => setFormData({ ...formData, title: e.target.value })}
+                      className="w-full px-3.5 py-2.5 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-600 mb-1">จำนวนเงิน (บาท) *</label>
+                      <input
+                        type="number"
+                        step="any"
+                        required
+                        placeholder="0.00"
+                        value={formData.amount}
+                        onChange={(e) => setFormData({ ...formData, amount: e.target.value })}
+                        className="w-full px-3.5 py-2.5 text-sm bg-slate-50 border border-slate-200 rounded-xl font-semibold"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-600 mb-1">วันที่</label>
+                      <input
+                        type="date"
+                        value={formData.date}
+                        onChange={(e) => setFormData({ ...formData, date: e.target.value })}
+                        className="w-full px-3.5 py-2.5 text-sm bg-slate-50 border border-slate-200 rounded-xl"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">หมวดหมู่</label>
+                    <select
+                      value={formData.category}
+                      onChange={(e) => setFormData({ ...formData, category: e.target.value })}
+                      className="w-full px-3.5 py-2.5 text-sm bg-slate-50 border border-slate-200 rounded-xl"
+                    >
+                      {CATEGORIES[formData.type].map(c => (
+                        <option key={c.id} value={c.id}>{c.label}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">บันทึกเพิ่มเติม</label>
+                    <input
+                      type="text"
+                      placeholder="บันทึกรายละเอียดเพิ่มเติม..."
+                      value={formData.note}
+                      onChange={(e) => setFormData({ ...formData, note: e.target.value })}
+                      className="w-full px-3.5 py-2.5 text-sm bg-slate-50 border border-slate-200 rounded-xl"
+                    />
+                  </div>
+
+                  <div className="pt-2 flex items-center justify-end gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => setIsModalOpen(false)}
+                      className="px-4 py-2.5 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-xl"
+                    >
+                      ยกเลิก
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-5 py-2.5 text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-md transition transform active:scale-95"
+                    >
+                      บันทึกรายการ
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
